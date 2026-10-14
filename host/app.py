@@ -69,6 +69,65 @@ def parse_frame(line):
 # 2. 串口读取器 —— pyserial 延迟导入
 # ============================================================================
 
+class SerialPump:
+    """
+    后台线程读串口, 只保留最新一帧; 主线程 latest() 拉新, 不阻塞.
+    用于 GUI 模式 (避免主线程被 pyserial 阻塞, 让 paintEvent 顺滑).
+    """
+    def __init__(self, port, baud=115200):
+        import serial
+        from threading import Thread, Lock
+        self.ser = serial.Serial(port, baudrate=baud, timeout=0.05)
+        self._lock = Lock()
+        self._latest = None
+        self._closed = False
+        self._t = Thread(target=self._pump, daemon=True)
+        self._t.start()
+
+    def close(self):
+        self._closed = True
+        try: self.ser.close()
+        except Exception: pass
+        try: self._t.join(timeout=0.3)
+        except Exception: pass
+
+    def _pump(self):
+        from collections import deque as _dq
+        buf = b""
+        t_last = None
+        hz_win = _dq(maxlen=20)
+        total = 0
+        hz = 0.0
+        while not self._closed:
+            try:
+                chunk = self.ser.read(128)
+            except Exception:
+                break
+            if not chunk:
+                continue
+            buf += chunk
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                fr = parse_frame(line.decode("utf-8", errors="ignore"))
+                if fr is None:
+                    continue
+                now = time.monotonic()
+                if t_last is not None:
+                    dt = now - t_last
+                    if dt > 0:
+                        hz_win.append(1.0/dt)
+                        hz = sum(hz_win)/len(hz_win)
+                t_last = now
+                total += 1
+                fr["hz"] = hz
+                fr["total"] = total
+                with self._lock:
+                    self._latest = fr
+
+    def latest(self):
+        with self._lock:
+            return self._latest
+
 class SerialReader:
     def __init__(self, port, baud=115200, timeout=1.0):
         
@@ -197,7 +256,9 @@ def run_gui():
         def paintEvent(self, _ev):
             p = QPainter(self)
             try:
-                p.setRenderHint(QPainter.Antialiasing, True)
+                # 多边形关抗锯齿 (快 2-3x), 文字/线仍抗锯齿
+                p.setRenderHint(QPainter.Antialiasing, False)
+                p.setRenderHint(QPainter.TextAntialiasing, True)
                 w, h = self.width(), self.height()
                 p.fillRect(self.rect(), QColor(20, 22, 28))
                 cx, cy = w/2, h/2
@@ -312,9 +373,10 @@ def run_gui():
             self.csv_fp = None
             self.csv_writer = None
             self.frame_count = 0
+            self._last_total = 0   # 仅在新帧时 update()
 
             self.refresh_ports()
-            self.timer = QTimer(self); self.timer.setInterval(40)
+            self.timer = QTimer(self); self.timer.setInterval(50)  # 20Hz UI
             self.timer.timeout.connect(self.tick); self.timer.start()
 
         def refresh_ports(self):
@@ -331,7 +393,7 @@ def run_gui():
                     QMessageBox.warning(self, "提示", "没有可用的串口")
                     self.conn_btn.setChecked(False); return
                 try:
-                    self.reader = SerialReader(port, baud=115200)
+                    self.reader = SerialPump(port, baud=115200)
                 except Exception as e:
                     QMessageBox.critical(self, "打开串口失败", str(e))
                     self.conn_btn.setChecked(False); return
@@ -373,8 +435,12 @@ def run_gui():
 
         def tick(self):
             if not self.reader: return
-            fr = self.reader.read_frame()
+            fr = self.reader.latest()
             if fr is None: return
+            total = fr.get("total", 0)
+            if total == self._last_total:
+                return                  # 没新帧, 跳过重绘
+            self._last_total = total
             i, j, k, real = fr["i"], fr["j"], fr["k"], fr["real"]
             if "roll_deg" in fr:
                 roll, pitch, yaw = fr["roll_deg"], fr["pitch_deg"], fr["yaw_deg"]
