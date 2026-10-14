@@ -15,7 +15,6 @@ BNO085 姿态上位机 —— 极简单文件版
     * 3D 立方体跟随姿态旋转 (QPainter 自绘, 不依赖 OpenGL)
     * 可选录制 CSV
 """
-import serial
 import sys, math, time, csv, argparse
 from collections import deque
 from datetime import datetime
@@ -75,7 +74,6 @@ class SerialPump:
     用于 GUI 模式 (避免主线程被 pyserial 阻塞, 让 paintEvent 顺滑).
     """
     def __init__(self, port, baud=115200):
-        import serial
         from threading import Thread, Lock
         self.ser = serial.Serial(port, baudrate=baud, timeout=0.05)
         self._lock = Lock()
