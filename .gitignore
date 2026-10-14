@@ -6,3 +6,7 @@
 .vscode/launch.json
 .vscode/ipch
 compile_commands.json
+
+# Python virtual environment
+host/.venv/
+
