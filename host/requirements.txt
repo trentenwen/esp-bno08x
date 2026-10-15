@@ -1,2 +1,3 @@
-PySide6>=6.5
+matplotlib>=3.7
+numpy>=1.23
 pyserial>=3.5
